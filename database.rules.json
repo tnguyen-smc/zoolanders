@@ -1,0 +1,17 @@
+{
+  "rules": {
+    "slideRooms": {
+      "$code": {
+        ".read": true,
+        ".write": true,
+        "images": {
+          "$i": { ".validate": "newData.isString() && newData.val().length < 8000000" }
+        }
+      }
+    },
+    "slideRoomIndex": {
+      ".read": true,
+      ".write": true
+    }
+  }
+}
