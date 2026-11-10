@@ -15,8 +15,8 @@
 /* ════ CONFIG ════════════════════════════════════════════════════════════════ */
 // Your Firebase Realtime Database URL. This is the Our City database; the slides live under their own
 // paths (slideRooms/, slideRoomIndex/) so they never touch the game's data. Swap in a new project's URL if you prefer.
-const FIREBASE_URL = 'https://zoolanders-gcks-default-rtdb.firebaseio.com/';
-const APP_NAME = 'Zoolanders';
+const FIREBASE_URL = 'https://our-city-gcks-default-rtdb.firebaseio.com';
+const APP_NAME = 'Live Slides';
 
 const ROOT = 'slideRooms', INDEX = 'slideRoomIndex';
 const ROOM_TTL_MS = 48 * 3600 * 1000;   // rooms are cleaned up after two days
@@ -113,7 +113,12 @@ function keepAwake() {
 }
 
 const fsRoot = document.documentElement;
-const canFS = !!(fsRoot.requestFullscreen || fsRoot.webkitRequestFullscreen);
+const canFS = !!((fsRoot.requestFullscreen || fsRoot.webkitRequestFullscreen) && (document.fullscreenEnabled || document.webkitFullscreenEnabled));
+/* iPhone Safari has no full screen for web pages, only for videos. So on iPhone the slide is drawn into a canvas,
+   turned into a live video stream, and played in iPhone's own full-screen video player. */
+const canVideoFS = !canFS && typeof HTMLCanvasElement !== 'undefined' && 'captureStream' in HTMLCanvasElement.prototype
+  && typeof HTMLVideoElement !== 'undefined' && 'webkitEnterFullscreen' in HTMLVideoElement.prototype;
+const VIDEO_PX = 1600;   // long edge of the iPhone full-screen video
 const isFS = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
 function toggleFS() {
   try {
@@ -243,7 +248,7 @@ async function sweepOldRooms() {
     if (Object.keys(ups).length) await db.ref().update(ups);
   } catch {}
 }
-async function createRoom(title, deck, onProg) {
+async function createRoom(title, deck, onProg, iphoneFS = true) {
   await getDB();
   await sweepOldRooms();
   let code = null;
@@ -252,7 +257,7 @@ async function createRoom(title, deck, onProg) {
   const TS = firebase.database.ServerValue.TIMESTAMP, n = deck.images.length;
   await withTimeout(db.ref().update({
     [INDEX + '/' + code]: TS,
-    [ROOT + '/' + code + '/meta']: { title, count: n, aspect: deck.aspect, ready: false, createdAt: TS },
+    [ROOT + '/' + code + '/meta']: { title, count: n, aspect: deck.aspect, iphoneFS: !!iphoneFS, ready: false, createdAt: TS },
     [ROOT + '/' + code + '/state']: { phase: 'lobby', idx: 0 }
   }), 20000, 'timeout');
   let done = 0;
@@ -286,7 +291,8 @@ function createStage(parent) {
     </div></div>`);
   const wrap = parent.lastElementChild, st = $('.stage', wrap), img = $('.stage-img', wrap), cv = $('canvas', wrap),
     ctx = cv.getContext('2d'), laser = $('.laser', wrap), msg = $('.stage-msg', wrap);
-  let aspect = 16 / 9, W = 0, H = 0, dpr = 1, strokes = [], local = null, raf = 0, token = 0;
+  let aspect = 16 / 9, W = 0, H = 0, dpr = 1, strokes = [], local = null, raf = 0, token = 0, laserP = null, imgReady = false;
+  const watchers = new Set(), changed = () => watchers.forEach(f => f());
 
   function fit() {
     const vw = wrap.clientWidth, vh = wrap.clientHeight; if (!vw || !vh) return;
@@ -298,8 +304,9 @@ function createStage(parent) {
     cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
     draw();
   }
-  function paint(s) {
+  function paint(s, c = ctx, W_ = W, H_ = H) {
     const p = s.pts; if (!p.length) return;
+    const ctx = c, W = W_, H = H_;
     const lw = (s.mode === 'hl' ? HL_W : PEN_W) * W;
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = lw;
@@ -329,21 +336,34 @@ function createStage(parent) {
     setAspect(a) { if (a > 0 && isFinite(a)) { aspect = a; fit(); } },
     async show(promise) {
       const t = ++token;
-      img.style.visibility = 'hidden';
+      img.style.visibility = 'hidden'; imgReady = false; changed();
       const slow = setTimeout(() => { if (t === token) { msg.textContent = 'Loading slide…'; msg.hidden = false; } }, 350);
       try {
         const src = await promise; if (t !== token) return;
         img.src = src;
         try { await img.decode(); } catch {}
         if (t !== token) return;
-        img.style.visibility = ''; msg.hidden = true;
+        img.style.visibility = ''; msg.hidden = true; imgReady = true; changed();
       } catch {
         if (t === token) { msg.textContent = 'This slide could not load. It will retry on the next change.'; msg.hidden = false; }
       } finally { clearTimeout(slow); }
     },
-    setStrokes(list) { strokes = list; redraw(); },
-    setLocal(s) { local = s; redraw(); },
+    setStrokes(list) { strokes = list; redraw(); changed(); },
+    setLocal(s) { local = s; redraw(); changed(); },
+    /** Draw the whole slide (image, drawings, laser) onto another canvas: used for the iPhone video. */
+    compose(c, w, h) {
+      c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.fillStyle = '#000'; c.fillRect(0, 0, w, h);
+      if (imgReady && img.naturalWidth) c.drawImage(img, 0, 0, w, h);
+      for (const s of strokes) paint(s, c, w, h);
+      if (laserP) {
+        const r = Math.max(6, w * 0.0065), x = laserP[0] * w, y = laserP[1] * h;
+        c.save(); c.fillStyle = '#ff2b2b'; c.shadowColor = 'rgba(255,43,43,.85)'; c.shadowBlur = r * 2.6;
+        c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill(); c.restore();
+      }
+    },
+    onChange(f) { watchers.add(f); return () => watchers.delete(f); },
     setLaser(p) {
+      laserP = p; changed();
       if (!p) { laser.hidden = true; return; }
       laser.hidden = false; laser.style.left = p[0] * 100 + '%'; laser.style.top = p[1] * 100 + '%';
     },
@@ -382,6 +402,11 @@ function showLanding(notice, prefill = '') {
               <span id="hSub" class="text-xs text-slate-300">PDF from Canva, or PNG / JPG images (one per slide). You can also drop them here.</span>
             </label>
           </div>
+          <label class="flex items-start gap-3 mt-5 cursor-pointer select-none">
+            <input type="checkbox" id="hIphone" class="check mt-0.5" ${store.get('ls:iphoneFS', true) ? 'checked' : ''}>
+            <span><span class="block font-semibold text-white">Full screen on iPhones</span>
+            <span class="block text-xs text-slate-300 mt-0.5 leading-relaxed">Gives iPhone viewers a full-screen button that plays the slides in iPhone’s video player. You can change this later on the join screen.</span></span>
+          </label>
           <div id="hProg" class="mt-5" hidden>
             <div class="h-2 rounded-full bg-white/15 overflow-hidden"><div id="hBar" class="h-full rounded-full" style="width:0;background:var(--accent);transition:width .2s"></div></div>
             <div id="hProgTxt" class="text-sm text-slate-300 font-semibold mt-2" aria-live="polite"></div>
@@ -430,7 +455,8 @@ function showLanding(notice, prefill = '') {
       setProg('Connecting', 0.02);
       await withTimeout(getDB(), 20000, 'timeout');
       const deck = await slidesFromFiles(files, (i, n) => setProg(`Preparing slide ${i} of ${n}`, 0.05 + 0.45 * i / n));
-      const code = await createRoom(title, deck, (i, n) => setProg(`Uploading slide ${i} of ${n}`, 0.5 + 0.5 * i / n));
+      const iphoneFS = $('#hIphone').checked; store.set('ls:iphoneFS', iphoneFS);
+      const code = await createRoom(title, deck, (i, n) => setProg(`Uploading slide ${i} of ${n}`, 0.5 + 0.5 * i / n), iphoneFS);
       primeSlides(code, deck.images);
       rememberHosted(code);
       history.pushState(null, '', '?host=' + code);
@@ -519,7 +545,11 @@ async function showHost(code) {
     $('#tbViewers').textContent = n;
     const oc = $('#ovCount'); if (oc) { oc.textContent = n; if (grew) { oc.parentElement.classList.remove('bump'); void oc.offsetWidth; oc.parentElement.classList.add('bump'); } }
   });
-  listen(R(code, 'meta'), v => { if (!v && idx >= 0) { rememberHosted(code, false); history.replaceState(null, '', baseURL()); showLanding('This room was ended.'); } });
+  listen(R(code, 'meta'), v => {
+    if (!v) { if (idx >= 0) { rememberHosted(code, false); history.replaceState(null, '', baseURL()); showLanding('This room was ended.'); } return; }
+    meta.iphoneFS = v.iphoneFS !== false;
+    const cb = $('#ovIphone'); if (cb) cb.checked = meta.iphoneFS;
+  });
 
   /* --- render --- */
   function render() {
@@ -556,6 +586,10 @@ async function showHost(code) {
                 <span class="text-sm md:text-base font-semibold text-slate-500">Phones joined</span>
                 <span id="ovCount" class="num text-4xl md:text-5xl font-bold text-emerald-600 leading-none">${viewers}</span>
               </div>
+              <label class="mt-4 flex items-center gap-3 rounded-2xl bg-white border border-slate-200 px-5 py-3 shadow-sm cursor-pointer select-none">
+                <input type="checkbox" id="ovIphone" class="check" ${meta.iphoneFS !== false ? 'checked' : ''}>
+                <span class="text-sm md:text-base font-semibold text-slate-600">Full screen on iPhones</span>
+              </label>
             </div>
             <div class="join-center">
               <div class="text-3xl md:text-5xl font-semibold text-slate-700 text-center">Scan to join</div>
@@ -609,6 +643,11 @@ async function showHost(code) {
     history.replaceState(null, '', baseURL());
     showLanding();
   }
+  onEl(app, 'change', e => {
+    if (e.target.id !== 'ovIphone') return;
+    const on = e.target.checked; meta.iphoneFS = on; store.set('ls:iphoneFS', on);
+    R(code, 'meta/iphoneFS').set(on).catch(writeErr);
+  });
   onEl(app, 'click', e => {
     const b = e.target.closest('[data-act],[data-tool],[data-color]'); if (!b) return;
     if (b.dataset.tool) return setTool(b.dataset.tool);
@@ -707,7 +746,7 @@ async function showHost(code) {
   onEl(document, 'keydown', e => {
     if (e.target.closest('input, textarea') || e.metaKey || e.altKey) return;
     const k = e.key;
-    if ((k === ' ' || k === 'Enter') && e.target.closest('button')) return;
+    if ((k === ' ' || k === 'Enter') && e.target.closest('button, label')) return;
     if (e.ctrlKey) { if (k.toLowerCase() === 'z' && phase === 'live') { e.preventDefault(); undo(); } return; }
     if (k === 'f' || k === 'F') { toggleFS(); return; }
     if (phase === 'lobby') { if (NEXT.includes(k)) { e.preventDefault(); start(); } return; }
@@ -738,10 +777,12 @@ async function showViewer(code) {
   history.replaceState(null, '', '?room=' + code);
 
   const count = Math.max(1, meta.count | 0);
-  let phase = null, idx = -1;
+  let phase = null, idx = -1, iphoneFS = meta.iphoneFS !== false;
+  const fsOK = () => canFS || (canVideoFS && iphoneFS);
+  const hintHTML = () => fsOK() ? `Tap the screen, then <span class="inline-block w-4 h-4 align-[-3px]">${I.fs}</span> for full screen` : 'Turn your phone sideways for bigger slides';
   app.innerHTML = `<div id="vStage"></div><div id="vWait"></div>
-    ${canFS ? `<button id="vFs" class="fs-btn gone" aria-label="Full screen">${I.fs}</button>` : ''}
-    <div id="vHint" class="hint gone">Turn your phone sideways for bigger slides</div>`;
+    ${canFS || canVideoFS ? `<button id="vFs" class="fs-btn gone" aria-label="Full screen">${I.fs}</button>` : ''}
+    <div id="vHint" class="hint gone"></div>`;
   const stage = createStage($('#vStage'));
   stage.setAspect(meta.aspect);
   teardown.push(keepAwake());
@@ -781,7 +822,7 @@ async function showViewer(code) {
               <div id="vLoad" class="text-xs font-semibold text-slate-500 mt-2" aria-live="polite"></div>
             </div>
           </section>
-          <p class="text-sm text-slate-500 mt-5">Turn your phone sideways during the talk for bigger slides.</p>
+          <p class="text-sm text-slate-500 mt-5">${fsOK() ? 'Once the slides appear, tap the screen for a full-screen button.' : 'Turn your phone sideways during the talk for bigger slides.'}</p>
         </div>
       </div>
     </div>`;
@@ -792,15 +833,65 @@ async function showViewer(code) {
   const fsBtn = $('#vFs'), hint = $('#vHint');
   let chromeT = 0, hinted = false;
   const flashChrome = () => {
-    if (phase !== 'live' || !fsBtn) return;
+    if (phase !== 'live' || !fsBtn || !fsOK()) return;
     fsBtn.classList.remove('gone'); clearTimeout(chromeT);
     chromeT = setTimeout(() => fsBtn.classList.add('gone'), 3000);
   };
   const maybeHint = () => {
-    if (hinted || phase !== 'live' || meta.aspect < 1.2 || innerWidth > innerHeight || innerWidth > 900) return;
-    hinted = true; hint.classList.remove('gone'); setTimeout(() => hint.classList.add('gone'), 5000);
+    if (hinted || phase !== 'live' || innerWidth > 900) return;
+    if (!fsOK() && (meta.aspect < 1.2 || innerWidth > innerHeight)) return;
+    hinted = true; hint.innerHTML = hintHTML(); hint.classList.remove('gone'); setTimeout(() => hint.classList.add('gone'), 5000);
   };
-  if (fsBtn) onEl(fsBtn, 'click', e => { e.stopPropagation(); toggleFS(); fsBtn.classList.add('gone'); });
+
+  /* iPhone full screen: a hidden video plays a live copy of the slide, then goes full screen when tapped.
+     It's started as soon as the talk is live so it's ready the moment someone taps the button. */
+  let vfs = null;
+  function vfsStart() {
+    if (vfs || !canVideoFS) return vfs;
+    const a = stage.aspect, cv = document.createElement('canvas');
+    cv.width = a >= 1 ? VIDEO_PX : Math.round(VIDEO_PX * a);
+    cv.height = a >= 1 ? Math.round(VIDEO_PX / a) : VIDEO_PX;
+    const c = cv.getContext('2d');
+    const paint = () => stage.compose(c, cv.width, cv.height);
+    paint();
+    let stream;
+    try { stream = cv.captureStream(30); } catch { return null; }
+    const video = document.createElement('video');
+    video.className = 'vfs-video'; video.muted = true; video.playsInline = true; video.autoplay = true;
+    video.setAttribute('playsinline', ''); video.setAttribute('muted', ''); video.setAttribute('aria-hidden', 'true');
+    video.srcObject = stream;
+    document.body.appendChild(video);
+    video.play().catch(() => {});
+    let raf = 0;
+    const offChange = stage.onChange(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); });
+    const tick = setInterval(paint, 1000);   // a fresh frame every second keeps the stream from stalling
+    const resume = () => { video.play().catch(() => {}); };
+    video.addEventListener('pause', resume);           // the player's pause button would freeze the slides
+    video.addEventListener('webkitendfullscreen', resume);
+    vfs = {
+      video,
+      stop() {
+        offChange(); clearInterval(tick); cancelAnimationFrame(raf);
+        video.removeEventListener('pause', resume);
+        try { if (video.webkitDisplayingFullscreen) video.webkitExitFullscreen(); } catch {}
+        stream.getTracks().forEach(t => t.stop()); video.srcObject = null; video.remove();
+      }
+    };
+    return vfs;
+  }
+  const vfsStop = () => { if (vfs) { vfs.stop(); vfs = null; } };
+  teardown.push(vfsStop);
+  const syncVideoFS = () => { if (canVideoFS && iphoneFS && phase === 'live') vfsStart(); else vfsStop(); };
+  function enterVideoFS() {
+    const v = vfsStart(); if (!v) return;
+    const go = () => { try { v.video.webkitEnterFullscreen(); } catch { toast('Full screen didn’t start. Tap the button again.'); } };
+    if (v.video.readyState >= 1) go();
+    else { v.video.play().catch(() => {}); v.video.addEventListener('loadedmetadata', go, { once: true }); }
+  }
+  if (fsBtn) onEl(fsBtn, 'click', e => {
+    e.stopPropagation(); fsBtn.classList.add('gone');
+    if (canFS) toggleFS(); else if (canVideoFS && iphoneFS) enterVideoFS();
+  });
   onEl(document, 'pointerdown', flashChrome);
   teardown.push(() => clearTimeout(chromeT));
 
@@ -821,9 +912,15 @@ async function showViewer(code) {
     if (ni !== idx) { idx = ni; stage.setStrokes([]); stage.setLaser(null); stage.show(getSlide(code, idx)); watchInk(idx); }
     renderWait();
     if (phase === 'live' && was !== 'live') { flashChrome(); maybeHint(); }
+    syncVideoFS();
   });
   listen(R(code, 'laser'), v => stage.setLaser(v && typeof v.x === 'number' ? [v.x / 1e4, v.y / 1e4] : null));
-  listen(R(code, 'meta'), v => { if (!v) showEnded(meta.title); });
+  listen(R(code, 'meta'), v => {
+    if (!v) { showEnded(meta.title); return; }
+    iphoneFS = v.iphoneFS !== false;
+    if (!fsOK() && fsBtn) fsBtn.classList.add('gone');
+    syncVideoFS();
+  });
 
   waitForReady().then(() => preloadAll(code, count, Math.max(0, idx), (d) => { loaded = d; showProgress(); }));
 }

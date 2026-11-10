@@ -66,7 +66,9 @@ If the host browser is refreshed or closed, open the site again and click **Resu
 
 ## Notes
 
-**Phones.** Android phones get a full-screen button (tap the screen to show it). iPhones don't allow web pages to go full screen, but the slide fills the screen edge to edge when the phone is turned sideways, and the app suggests this.
+**Phones.** Viewers tap the screen to show a full-screen button. Android phones and iPads use the browser's normal full screen. iPhones don't allow that for web pages, so on iPhone the button plays a live copy of the slide (with your drawing and laser) in iPhone's own full-screen video player. Tapping the screen in that player shows the video controls for a moment, which is normal.
+
+The iPhone video mode is on by default. Turn it off with the **Full screen on iPhones** checkbox when you create the room, or later on the join screen (press **Q** during the talk). The change reaches phones immediately. When it's off, iPhone viewers are told to turn the phone sideways instead.
 
 **Capacity.** Firebase's free plan allows 100 simultaneous connections and 10 GB of downloads a month. A 30-slide deck is roughly 8 to 12 MB per phone, so a 20-person session uses about 200 MB. Rooms are deleted automatically two days after they're created (the clean-up runs whenever a new room is made).
 
