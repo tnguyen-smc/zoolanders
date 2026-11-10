@@ -7,6 +7,14 @@
     "slideRoomIndex": {
       ".read": true,
       ".write": true
+    },
+    "slideDecks": {
+      ".read": true,
+      ".write": true
+    },
+    "slideDeckIndex": {
+      ".read": true,
+      ".write": true
     }
   }
 }

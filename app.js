@@ -4,7 +4,10 @@
 
    slideRooms/<CODE>/meta                 { title, count, aspect, ready, createdAt }
    slideRooms/<CODE>/state                { phase: 'lobby' | 'live', idx }
-   slideRooms/<CODE>/images/<i>           slide i as a JPEG data URL
+   slideDecks/<ID>/meta                   { title, count, aspect, ready, createdAt }   a saved deck, reusable for any number of rooms
+   slideDecks/<ID>/images/<i>             slide i as a JPEG data URL
+   slideDeckIndex/<ID>                    { title, count, aspect, thumb, ready, createdAt, lastUsed }   the "saved decks" list
+   slideRooms/<CODE>/meta.deck            which saved deck the room shows
    slideRooms/<CODE>/ink/<i>/<strokeId>   { s: 'pen|#hex', p: { k00000: 'x,y,x,y,…' } }   x,y = 0…10000 across the slide
    slideRooms/<CODE>/laser                { x, y } or null
    slideRooms/<CODE>/viewers/<device>     true while that phone is connected
@@ -17,7 +20,7 @@
 const FIREBASE_URL = 'https://zoolanders-gcks-default-rtdb.firebaseio.com';
 const APP_NAME = 'Zoolanders';
 
-const ROOT = 'slideRooms', INDEX = 'slideRoomIndex';
+const ROOT = 'slideRooms', INDEX = 'slideRoomIndex', DECKS = 'slideDecks', DECK_INDEX = 'slideDeckIndex';
 const ROOM_TTL_MS = 48 * 3600 * 1000;   // rooms are cleaned up after two days
 const SLIDE_PX = 1920;                  // long edge of each slide image
 const JPEG_Q = 0.82;
@@ -206,26 +209,28 @@ function watchConnection(cb) {
 }
 
 /* Slide images: each one is downloaded once per device and kept in memory. */
+/** Where a room's slide images live: its saved deck (or, for rooms made before saved decks, the room itself). */
+const slidePath = (code, meta) => meta && meta.deck ? DECKS + '/' + meta.deck + '/images' : ROOT + '/' + code + '/images';
 const slideCache = new Map();
-function getSlide(code, i) {
-  const k = code + '/' + i;
+function getSlide(path, i) {
+  const k = path + '/' + i;
   if (!slideCache.has(k)) {
-    const p = once(R(code, 'images/' + i), 60000).then(v => { if (!v) throw new Error('missing slide'); return v; });
+    const p = once(db.ref(k), 60000).then(v => { if (!v) throw new Error('missing slide'); return v; });
     p.catch(() => slideCache.delete(k));
     slideCache.set(k, p);
   }
   return slideCache.get(k);
 }
-function primeSlides(code, images) { images.forEach((d, i) => slideCache.set(code + '/' + i, Promise.resolve(d))); }
+function primeSlides(path, images) { images.forEach((d, i) => slideCache.set(path + '/' + i, Promise.resolve(d))); }
 /** Download every slide, starting at `from`, two at a time. */
-function preloadAll(code, count, from, onProgress) {
+function preloadAll(path, count, from, onProgress) {
   let alive = true; teardown.push(() => { alive = false; });
   const order = []; for (let k = 0; k < count; k++) order.push((from + k) % count);
   let done = 0;
   const worker = async () => {
     while (alive && order.length) {
       const i = order.shift();
-      try { await getSlide(code, i); } catch {}
+      try { await getSlide(path, i); } catch {}
       done++; if (alive && onProgress) onProgress(done, count);
     }
   };
@@ -283,24 +288,60 @@ async function sweepOldRooms() {
   try {
     const idx = await once(db.ref(INDEX)) || {}, now = Date.now(), ups = {};
     for (const [c, t] of Object.entries(idx)) if (typeof t !== 'number' || now - t > ROOM_TTL_MS) { ups[ROOT + '/' + c] = null; ups[INDEX + '/' + c] = null; }
+    const decks = await once(db.ref(DECK_INDEX)) || {};
+    for (const [id, d] of Object.entries(decks)) if (!d || (!d.ready && now - (d.createdAt || 0) > 24 * 3600 * 1000)) { ups[DECKS + '/' + id] = null; ups[DECK_INDEX + '/' + id] = null; }
     if (Object.keys(ups).length) await db.ref().update(ups);
   } catch {}
 }
-async function createRoom(title, deck, onProg, iphoneFS = true) {
+/** Small preview of the first slide for the saved-decks list. */
+function makeThumb(dataURL) {
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => {
+      const w = 320, h = Math.round(320 * im.naturalHeight / im.naturalWidth);
+      canvasToJpeg(x => x.drawImage(im, 0, 0, w, h), w, h).then(res).catch(() => res(''));
+    };
+    im.onerror = () => res('');
+    im.src = dataURL;
+  });
+}
+/** Upload a deck once; it stays saved so it can be presented again without uploading. */
+async function createDeck(title, deck, onProg) {
+  await getDB();
+  const id = db.ref(DECKS).push().key, TS = firebase.database.ServerValue.TIMESTAMP, n = deck.images.length;
+  const thumb = await makeThumb(deck.images[0]);
+  await withTimeout(db.ref().update({
+    [DECKS + '/' + id + '/meta']: { title, count: n, aspect: deck.aspect, ready: false, createdAt: TS },
+    [DECK_INDEX + '/' + id]: { title, count: n, aspect: deck.aspect, thumb, ready: false, createdAt: TS, lastUsed: TS }
+  }), 20000, 'timeout');
+  let done = 0;
+  await Promise.all(deck.images.map((d, i) => db.ref(DECKS + '/' + id + '/images/' + i).set(d).then(() => onProg(++done, n))));
+  await db.ref().update({ [DECKS + '/' + id + '/meta/ready']: true, [DECK_INDEX + '/' + id + '/ready']: true });
+  return { id, title, count: n, aspect: deck.aspect };
+}
+async function listDecks() {
+  await getDB();
+  const v = await once(db.ref(DECK_INDEX)) || {};
+  return Object.entries(v).map(([id, d]) => ({ id, ...d })).filter(d => d && d.ready)
+    .sort((a, b) => (b.lastUsed || b.createdAt || 0) - (a.lastUsed || a.createdAt || 0));
+}
+async function deleteDeck(id) {
+  await db.ref().update({ [DECKS + '/' + id]: null, [DECK_INDEX + '/' + id]: null });
+}
+/** A room is one showing of a deck: its own code, slide position and drawings. */
+async function createRoom(deck, iphoneFS = true) {
   await getDB();
   await sweepOldRooms();
   let code = null;
   for (let t = 0; t < 12 && !code; t++) { const c = randCode(); if ((await once(db.ref(INDEX + '/' + c))) == null) code = c; }
   if (!code) throw new Error('Could not find a free room code. Try again.');
-  const TS = firebase.database.ServerValue.TIMESTAMP, n = deck.images.length;
+  const TS = firebase.database.ServerValue.TIMESTAMP;
   await withTimeout(db.ref().update({
     [INDEX + '/' + code]: TS,
-    [ROOT + '/' + code + '/meta']: { title, count: n, aspect: deck.aspect, iphoneFS: !!iphoneFS, ready: false, createdAt: TS },
-    [ROOT + '/' + code + '/state']: { phase: 'lobby', idx: 0 }
+    [ROOT + '/' + code + '/meta']: { title: deck.title, count: deck.count, aspect: deck.aspect, deck: deck.id, iphoneFS: !!iphoneFS, ready: true, createdAt: TS },
+    [ROOT + '/' + code + '/state']: { phase: 'lobby', idx: 0 },
+    [DECK_INDEX + '/' + deck.id + '/lastUsed']: TS
   }), 20000, 'timeout');
-  let done = 0;
-  await Promise.all(deck.images.map((d, i) => R(code, 'images/' + i).set(d).then(() => onProg(++done, n))));
-  await R(code, 'meta/ready').set(true);
   return code;
 }
 function rememberHosted(code, add = true) {
@@ -409,6 +450,26 @@ function createStage(parent) {
   };
 }
 
+/** A full-frame message for the iPhone video player, in the app's colors. */
+function drawNotice(c, w, h, title, headline, instruction) {
+  const u = Math.min(w / 1600, h / 900);
+  c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.shadowBlur = 0;
+  c.fillStyle = '#f6f7f4'; c.fillRect(0, 0, w, h);
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  const fit = (text, weight, size, color, y) => {
+    let s = size; c.font = `${weight} ${s}px Montserrat, system-ui, sans-serif`;
+    while (c.measureText(text).width > w * 0.88 && s > 12) { s -= 2; c.font = `${weight} ${s}px Montserrat, system-ui, sans-serif`; }
+    c.fillStyle = color; c.fillText(text, w / 2, y);
+  };
+  const cy = h / 2;
+  fit(String(title || '').toUpperCase(), 300, 46 * u, '#58595b', cy - 230 * u);
+  c.fillStyle = '#8dc63f'; c.beginPath(); c.arc(w / 2, cy - 105 * u, 52 * u, 0, Math.PI * 2); c.fill();
+  c.strokeStyle = '#1f330a'; c.lineWidth = 11 * u; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath(); c.moveTo(w / 2 - 24 * u, cy - 105 * u); c.lineTo(w / 2 - 6 * u, cy - 86 * u); c.lineTo(w / 2 + 26 * u, cy - 124 * u); c.stroke();
+  fit(headline, 700, 92 * u, '#38393b', cy + 30 * u);
+  fit(instruction, 600, 62 * u, '#4a4b4d', cy + 150 * u);
+}
+
 /* ════ SCREENS ═══════════════════════════════════════════════════════════════ */
 const loadingScreen = text => `
   <div class="min-h-[100dvh] bg-grid grid place-items-center px-6">
@@ -429,8 +490,11 @@ function showLanding(notice, prefill = '') {
         ${notice ? `<div class="mb-5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm px-4 py-3 pop" role="alert">${esc(notice)}</div>` : ''}
         <section class="panel p-6 md:p-8">
           <h2 class="text-2xl md:text-3xl font-semibold text-white leading-tight">Host a presentation</h2>
-          <p class="text-slate-300 mt-3 leading-relaxed">Upload your Canva deck. Project this screen, and everyone who scans the code follows along on their phone, including anything you draw.</p>
-          <label class="lbl !text-slate-300 mt-6" for="hTitle">Presentation title</label>
+          <p class="text-slate-300 mt-3 leading-relaxed">Project this screen, and everyone who scans the code follows along on their phone, including anything you draw.</p>
+          <div id="hDecks"></div>
+          <h3 class="text-lg font-semibold text-white mt-7">Upload a new deck</h3>
+          <p class="text-xs text-slate-300 mt-1">It’s saved, so next time you can present it again without uploading.</p>
+          <label class="lbl !text-slate-300 mt-4" for="hTitle">Presentation title</label>
           <input id="hTitle" class="field" maxlength="60" placeholder="State of the City 2026" autocomplete="off">
           <div class="mt-4">
             <input type="file" id="hFile" class="sr-only" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" multiple>
@@ -443,7 +507,7 @@ function showLanding(notice, prefill = '') {
           <label class="flex items-start gap-3 mt-5 cursor-pointer select-none">
             <input type="checkbox" id="hIphone" class="check mt-0.5" ${store.get('ls:iphoneFS', true) ? 'checked' : ''}>
             <span><span class="block font-semibold text-white">Full screen on iPhones</span>
-            <span class="block text-xs text-slate-300 mt-0.5 leading-relaxed">Gives iPhone viewers a full-screen button that plays the slides in iPhone’s video player. You can change this later on the join screen.</span></span>
+            <span class="block text-xs text-slate-300 mt-0.5 leading-relaxed">Gives iPhone viewers a full-screen button that plays the slides in iPhone’s video player. Applies to any deck you present, and you can change it later on the join screen.</span></span>
           </label>
           <div id="hProg" class="mt-5" hidden>
             <div class="h-2 rounded-full bg-white/15 overflow-hidden"><div id="hBar" class="h-full rounded-full" style="width:0;background:var(--accent);transition:width .2s"></div></div>
@@ -451,7 +515,7 @@ function showLanding(notice, prefill = '') {
           </div>
           <div id="hErr" class="mt-4 rounded-xl bg-rose-50 text-rose-700 text-sm px-4 py-3" role="alert" hidden></div>
           <div class="pt-6 space-y-3">
-            <button data-act="create" class="btn btn-green w-full !text-lg !py-4" disabled>Create room</button>
+            <button data-act="create" class="btn btn-green w-full !text-lg !py-4" disabled>Upload and create room</button>
             ${resume ? `<button data-act="resume" class="btn btn-ghost w-full">Resume room <span class="num font-bold tracking-widest">${esc(resume)}</span></button>` : ''}
           </div>
         </section>
@@ -493,17 +557,58 @@ function showLanding(notice, prefill = '') {
       setProg('Connecting', 0.02);
       await withTimeout(getDB(), 20000, 'timeout');
       const deck = await slidesFromFiles(files, (i, n) => setProg(`Preparing slide ${i} of ${n}`, 0.05 + 0.45 * i / n));
-      const iphoneFS = $('#hIphone').checked; store.set('ls:iphoneFS', iphoneFS);
-      const code = await createRoom(title, deck, (i, n) => setProg(`Uploading slide ${i} of ${n}`, 0.5 + 0.5 * i / n), iphoneFS);
-      primeSlides(code, deck.images);
-      rememberHosted(code);
-      history.pushState(null, '', '?host=' + code);
-      showHost(code);
+      const saved = await createDeck(title, deck, (i, n) => setProg(`Uploading slide ${i} of ${n}`, 0.5 + 0.48 * i / n));
+      primeSlides(DECKS + '/' + saved.id + '/images', deck.images);
+      setProg('Creating room', 0.99);
+      await openRoom(saved);
     } catch (e) {
       busy = false; fileIn.disabled = false; createBtn.disabled = !files;
       $('#hProg').hidden = true; err.textContent = friendlyError(e); err.hidden = false;
     }
   }
+  async function openRoom(deck) {
+    const iphoneFS = $('#hIphone').checked; store.set('ls:iphoneFS', iphoneFS);
+    const code = await createRoom(deck, iphoneFS);
+    rememberHosted(code);
+    history.pushState(null, '', '?host=' + code);
+    showHost(code);
+  }
+
+  /* saved decks: present again with one click */
+  let decks = [];
+  const fmtDate = t => t ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+  function renderDecks() {
+    const el = $('#hDecks'); if (!el) return;
+    el.innerHTML = !decks.length ? '' : `
+      <h3 class="text-lg font-semibold text-white mt-7">Present a saved deck</h3>
+      <ul class="mt-3 space-y-2">${decks.map(d => `
+        <li class="flex items-center gap-3 rounded-xl bg-white/10 p-2 pr-2.5">
+          ${d.thumb ? `<img src="${esc(d.thumb)}" alt="" class="w-20 sm:w-24 rounded-lg flex-none bg-white/10" style="aspect-ratio:${+d.aspect || 16 / 9}">` : ''}
+          <div class="min-w-0 flex-1">
+            <div class="font-semibold text-white truncate">${esc(d.title)}</div>
+            <div class="text-xs text-slate-300">${d.count} ${d.count === 1 ? 'slide' : 'slides'}, uploaded ${esc(fmtDate(d.createdAt))}</div>
+          </div>
+          <button data-act="present" data-id="${esc(d.id)}" class="btn btn-green !py-2 !px-4">Present</button>
+          <button data-act="deldeck" data-id="${esc(d.id)}" class="btn btn-ghost !py-2 !px-2.5" title="Delete this deck" aria-label="Delete ${esc(d.title)}">${I.clear}</button>
+        </li>`).join('')}
+      </ul>`;
+  }
+  listDecks().then(list => { decks = list; renderDecks(); }).catch(e => {
+    const el = $('#hDecks'); if (el) el.innerHTML = `<div class="mt-5 rounded-xl bg-rose-50 text-rose-700 text-sm px-4 py-3">Saved decks couldn’t load. ${esc(friendlyError(e))}</div>`;
+  });
+  async function present(id) {
+    const d = decks.find(x => x.id === id); if (!d || busy) return;
+    busy = true; createBtn.disabled = true; err.hidden = true;
+    try { setProg(`Opening ${d.title}`, 0.5); await openRoom(d); }
+    catch (e) { busy = false; createBtn.disabled = !files; $('#hProg').hidden = true; err.textContent = friendlyError(e); err.hidden = false; }
+  }
+  async function removeDeck(id) {
+    const d = decks.find(x => x.id === id); if (!d) return;
+    if (!confirm(`Delete “${d.title}”? You’ll need to upload it again to present it.`)) return;
+    try { await deleteDeck(id); decks = decks.filter(x => x.id !== id); renderDecks(); }
+    catch (e) { toast(friendlyError(e), 'error'); }
+  }
+
   const join = () => {
     const c = cleanCode($('#jCode').value);
     if (c.length !== 4) { $('#jCode').focus(); toast('Room codes have four letters.'); return; }
@@ -514,6 +619,8 @@ function showLanding(notice, prefill = '') {
     if (b.dataset.act === 'create') create();
     else if (b.dataset.act === 'join') join();
     else if (b.dataset.act === 'resume') { history.pushState(null, '', '?host=' + resume); showHost(resume); }
+    else if (b.dataset.act === 'present') present(b.dataset.id);
+    else if (b.dataset.act === 'deldeck') removeDeck(b.dataset.id);
   });
   onEl($('#jCode'), 'input', e => { e.target.value = cleanCode(e.target.value); });
   onEl($('#jCode'), 'keydown', e => { if (e.key === 'Enter') join(); });
@@ -531,7 +638,7 @@ async function showHost(code) {
   document.title = meta.title + ' | ' + APP_NAME;
   document.body.classList.add('host');
 
-  const count = Math.max(1, meta.count | 0);
+  const count = Math.max(1, meta.count | 0), sp = slidePath(code, meta);
   let phase = 'lobby', idx = -1, strokes = [], viewers = 0, tool = 'none', color = COLORS[0], qrOpen = false, ovMode = null;
 
   app.innerHTML = `<div id="hStage"></div><div id="hOverlay"></div>
@@ -560,7 +667,7 @@ async function showHost(code) {
   const tb = $('#tb'), ov = $('#hOverlay');
   teardown.push(keepAwake());
   watchConnection();
-  preloadAll(code, count, 0);
+  preloadAll(sp, count, 0);
 
   /* --- sync --- */
   let inkRef = null, inkH = null;
@@ -575,7 +682,7 @@ async function showHost(code) {
     v = v || {};
     phase = v.phase === 'live' ? 'live' : 'lobby';
     const ni = clamp(v.idx | 0, 0, count - 1);
-    if (ni !== idx) { idx = ni; strokes = []; stage.setStrokes([]); stage.show(getSlide(code, idx)); watchInk(idx); }
+    if (ni !== idx) { idx = ni; strokes = []; stage.setStrokes([]); stage.show(getSlide(sp, idx)); watchInk(idx); }
     render();
   }, writeErr);
   listen(R(code, 'viewers'), v => {
@@ -654,12 +761,16 @@ async function showHost(code) {
       const cap = $('#ovCap'), th = $('#ovThumb');
       cap.textContent = mode === 'lobby' ? `First slide of ${count}` : `Now on slide ${idx + 1} of ${count}`;
       const want = idx;
-      getSlide(code, idx).then(src => { if (want === idx && th.isConnected) th.src = src; }).catch(() => {});
+      getSlide(sp, idx).then(src => { if (want === idx && th.isConnected) th.src = src; }).catch(() => {});
     }
   }
 
   /* --- actions --- */
+  let lastNudge = 0;
   const go = i => {
+    if (i >= count && idx === count - 1 && Date.now() - lastNudge > 4000) {   // pressing next on the last slide
+      lastNudge = Date.now(); toast('That’s the last slide. Click End (the power button) to close the presentation on everyone’s phones.');
+    }
     i = clamp(i, 0, count - 1); if (i === idx) return;
     endStroke(); if (tool === 'laser') sendLaser(null);
     R(code, 'state').update({ idx: i }).catch(writeErr);
@@ -675,7 +786,7 @@ async function showHost(code) {
   const clearSlide = () => { if (strokes.length) R(code, 'ink/' + idx).remove().catch(writeErr); };
   const setQR = v => { qrOpen = v; render(); };
   async function endRoom() {
-    if (!confirm('End the presentation for everyone? This deletes the room and its slides.')) return;
+    if (!confirm('End the presentation for everyone? Phones will close the slides. Your deck stays saved for next time.')) return;
     try { await db.ref().update({ [ROOT + '/' + code]: null, [INDEX + '/' + code]: null }); } catch (e) { return writeErr(e); }
     rememberHosted(code, false);
     history.replaceState(null, '', baseURL());
@@ -814,7 +925,7 @@ async function showViewer(code) {
   document.title = meta.title + ' | ' + APP_NAME;
   history.replaceState(null, '', '?room=' + code);
 
-  const count = Math.max(1, meta.count | 0);
+  const count = Math.max(1, meta.count | 0), sp = slidePath(code, meta);
   let phase = null, idx = -1, iphoneFS = meta.iphoneFS !== false;
   const fsOK = () => canFS || (canVideoFS && iphoneFS);
   app.innerHTML = `<div id="vStage"></div><div id="vWait"></div>
@@ -887,7 +998,8 @@ async function showViewer(code) {
     cv.width = a >= 1 ? VIDEO_PX : Math.round(VIDEO_PX * a);
     cv.height = a >= 1 ? Math.round(VIDEO_PX / a) : VIDEO_PX;
     const c = cv.getContext('2d');
-    const paint = () => stage.compose(c, cv.width, cv.height);
+    let render = () => stage.compose(c, cv.width, cv.height);
+    const paint = () => render();
     paint();
     let stream;
     try { stream = cv.captureStream(30); } catch { return null; }
@@ -901,14 +1013,16 @@ async function showViewer(code) {
     let raf = 0;
     const offChange = stage.onChange(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); });
     const tick = setInterval(paint, 1000);   // a fresh frame every second keeps the stream from stalling
+    let alive = true, closing = false;
     // the player's pause button would freeze the slides, so play again, but never while the page is in the background
-    const resume = () => { if (vfs && vfs.video === video && document.visibilityState === 'visible') video.play().catch(() => {}); };
-    const onEnd = () => { resume(); updateFsBtn(); };
+    const resume = () => { if (alive && document.visibilityState === 'visible') video.play().catch(() => {}); };
+    const onEnd = () => { if (closing) stop(); else { resume(); updateFsBtn(); } };
+    const onHidden = () => { if (document.visibilityState === 'hidden') stop(); };
     video.addEventListener('pause', resume);
     video.addEventListener('webkitendfullscreen', onEnd);
-    vfs = {
-      video,
-      stop() {
+    function stop() {
+        if (!alive) return; alive = false;
+        document.removeEventListener('visibilitychange', onHidden);
         offChange(); clearInterval(tick); cancelAnimationFrame(raf);
         video.removeEventListener('pause', resume); video.removeEventListener('webkitendfullscreen', onEnd);
         try { if (video.webkitPresentationMode && video.webkitPresentationMode !== 'inline') video.webkitSetPresentationMode('inline'); } catch {}
@@ -917,11 +1031,29 @@ async function showViewer(code) {
         stream.getTracks().forEach(t => t.stop());
         video.srcObject = null; video.removeAttribute('src'); try { video.load(); } catch {}
         setTimeout(() => video.remove(), 600);   // give iOS a moment to close the player before the element goes
+    }
+    vfs = {
+      video, stop,
+      /** The talk ended (or iPhone full screen was switched off) while someone may be watching in the video player.
+          The video switches to a big message, then the player is closed for them. If iOS keeps it open anyway,
+          the message stays up and tells them exactly what to tap. */
+      finish(headline, instruction) {
+        if (!alive) return;
+        if (!video.webkitDisplayingFullscreen) { stop(); return; }
+        closing = true; offChange();
+        render = () => drawNotice(c, cv.width, cv.height, meta.title, headline, instruction);
+        paint();
+        document.addEventListener('visibilitychange', onHidden);
+        setTimeout(() => { if (alive) { try { video.webkitExitFullscreen(); } catch {} } }, 1500);
+        setTimeout(() => { if (alive && !video.webkitDisplayingFullscreen) stop(); }, 3000);
+        setTimeout(stop, 15 * 60 * 1000);
       }
     };
     return vfs;
   }
   const vfsStop = () => { if (vfs) { const v = vfs; vfs = null; v.stop(); } };
+  // hands the video off so it can finish on its own, even after this screen is gone
+  const vfsFinish = (headline, instruction) => { if (vfs) { const v = vfs; vfs = null; v.finish(headline, instruction); } };
   teardown.push(vfsStop);
   // Swiping home or switching apps closes the iPhone video completely, so iOS has nothing to turn into picture-in-picture.
   // It's set up again when they come back.
@@ -953,7 +1085,7 @@ async function showViewer(code) {
     const was = phase;
     phase = v.phase === 'live' ? 'live' : 'lobby';
     const ni = clamp(v.idx | 0, 0, count - 1);
-    if (ni !== idx) { idx = ni; stage.setStrokes([]); stage.setLaser(null); stage.show(getSlide(code, idx)); watchInk(idx); }
+    if (ni !== idx) { idx = ni; stage.setStrokes([]); stage.setLaser(null); stage.show(getSlide(sp, idx)); watchInk(idx); }
     renderWait();
     updateFsBtn();
     if (phase === 'live' && was !== 'live') maybeHint();
@@ -961,13 +1093,14 @@ async function showViewer(code) {
   });
   listen(R(code, 'laser'), v => stage.setLaser(v && typeof v.x === 'number' ? [v.x / 1e4, v.y / 1e4] : null));
   listen(R(code, 'meta'), v => {
-    if (!v) { vfsStop(); showEnded(meta.title); return; }
+    if (!v) { vfsFinish('The presentation has ended', 'Tap ✕ in the top left corner to close'); showEnded(meta.title); return; }
     iphoneFS = v.iphoneFS !== false;
+    if (!iphoneFS) vfsFinish('Full screen was turned off', 'Tap ✕ in the top left corner to go back');
     updateFsBtn();
     syncVideoFS();
   });
 
-  waitForReady().then(() => preloadAll(code, count, Math.max(0, idx), (d) => { loaded = d; showProgress(); }));
+  waitForReady().then(() => preloadAll(sp, count, Math.max(0, idx), (d) => { loaded = d; showProgress(); }));
 }
 
 function showEnded(title) {
@@ -978,8 +1111,8 @@ function showEnded(title) {
     <div class="w-full max-w-md text-center pop">
       <div class="wordmark text-slate-600 text-xl md:text-2xl">${esc(title || APP_NAME)}</div>
       <section class="card p-7 mt-6">
-        <h1 class="text-2xl font-semibold text-slate-800">The presentation has ended</h1>
-        <p class="text-slate-500 mt-2">Thanks for following along.</p>
+        <h1 class="text-3xl font-semibold text-slate-800 leading-tight">The presentation has ended</h1>
+        <p class="text-slate-500 text-lg mt-3">Thanks for following along. You can close this page.</p>
         <button data-act="home" class="btn btn-dark w-full mt-6">Join another presentation</button>
       </section>
     </div>

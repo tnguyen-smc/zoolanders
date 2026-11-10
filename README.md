@@ -18,7 +18,7 @@ It's a static site, like Our City. GitHub Pages hosts the files and Firebase Rea
 
 ### 1. Firebase
 
-`app.js` points to the Zoolanders database (`https://zoolanders-gcks-default-rtdb.firebaseio.com`). In the Firebase console, open **Build → Realtime Database → Rules**, replace everything with the contents of `database.rules.json`, and click **Publish**.
+`app.js` points to the Zoolanders database (`https://zoolanders-gcks-default-rtdb.firebaseio.com`). In the Firebase console, open **Build → Realtime Database → Rules**, replace everything with the contents of `database.rules.json` (four entries: `slideRooms`, `slideRoomIndex`, `slideDecks`, `slideDeckIndex`), and click **Publish**.
 
 ### 2. GitHub Pages
 
@@ -36,7 +36,7 @@ Animations, transitions and videos don't carry over; each slide shows its final 
 
 ## Presenting
 
-1. Open the site on the computer connected to the projector, add a title, choose the PDF, and click **Create room**.
+1. Open the site on the computer connected to the projector. The first time, add a title, choose the PDF, and click **Upload and create room**. The deck is saved: next time it's listed under **Present a saved deck**, and **Present** opens a fresh room in a second with no upload. Saved decks are shared across any computer that opens the site; the trash button deletes one.
 2. The lobby shows the QR code, a four-letter code, and how many phones have joined. Phones start downloading every slide while they wait, so changes are instant once you begin.
 3. Click **Start presentation** and press **F** for full screen.
 
@@ -57,7 +57,7 @@ Drawings stay on their slide, so when you go back to a slide, your notes are sti
 
 If the host browser is refreshed or closed, open the site again and click **Resume room**. Everything picks up where it was.
 
-**End** (the power button) deletes the room and its slides for everyone; phones see a "presentation has ended" screen.
+**End** (the power button) closes the presentation on every phone; they see a large "The presentation has ended" screen. iPhones watching in the full-screen video player are taken out of it automatically. If iOS doesn't allow that, the video itself switches to a message telling them to tap ✕ in the top left corner. Pressing Next on the last slide reminds you to click End. The room is deleted, and your deck stays saved.
 
 ## Notes
 
@@ -65,7 +65,7 @@ If the host browser is refreshed or closed, open the site again and click **Resu
 
 The iPhone video mode is on by default. Turn it off with the **Full screen on iPhones** checkbox when you create the room, or later on the join screen (press **Q** during the talk). The change reaches phones immediately. When it's off, iPhone viewers are told to turn the phone sideways instead.
 
-**Capacity.** Firebase's free plan allows 100 simultaneous connections and 10 GB of downloads a month. A 30-slide deck is roughly 8 to 12 MB per phone, so a 20-person session uses about 200 MB. Rooms are deleted automatically two days after they're created (the clean-up runs whenever a new room is made).
+**Capacity.** Firebase's free plan allows 100 simultaneous connections, 1 GB of storage and 10 GB of downloads a month. A 30-slide deck is roughly 8 to 12 MB, so about 80 to 100 saved decks fit; delete old ones from the list when you're done with them. A 20-person session downloads about 200 MB. Rooms (the codes, slide positions and drawings) are deleted automatically two days after they're created.
 
 **Security.** Like Our City, there are no logins. Anyone with the code can watch, which is the point. The rules don't stop a technically skilled person from writing to a room's data directly, so don't put anything confidential in a deck. If you ever need that, the next step is Firebase Anonymous Authentication with rules that let only the host's account change the slide.
 
