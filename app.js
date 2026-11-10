@@ -99,17 +99,45 @@ function toast(msg, kind = 'info') {
 let lastWriteErr = 0;
 const writeErr = err => { if (Date.now() - lastWriteErr > 5000) { lastWriteErr = Date.now(); toast(friendlyError(err), 'error'); } };
 
-/** Keep the screen awake so phones don't lock mid-talk and drop the connection. */
+/** Keep the screen awake so phones don't dim or lock mid-talk, whether or not they're in full screen.
+    Uses the Wake Lock API where the browser has it. On iPhone and iPad it also loops a tiny silent video,
+    the long-standing way to stop iOS from sleeping, because Wake Lock there is missing on older versions
+    and unreliable from home-screen icons. Both are re-armed on every tap and whenever the page comes back. */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const NOSLEEP_MP4 = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMrbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlV0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAHNbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAgABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABeG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAThzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwArZHsBEAAADAAQAAAMACDxImSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAApAAAAKQAAAABhzdHRzAAAAAAAAAAEAAAACAABAAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAACAAAAAQAAABxzdHN6AAAAAAAAAAAAAAACAAAChgAAAAoAAAAUc3RjbwAAAAAAAAABAAADWwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAAKYbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAOZYiEBb///w9FAAFPf4AAAAAGQZo4CvqA';
 function keepAwake() {
-  let lock = null, stopped = false;
-  const grab = async () => {
-    if (stopped || !('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
-    try { lock = await navigator.wakeLock.request('screen'); lock.addEventListener('release', () => { lock = null; }); } catch {}
+  let lock = null, asking = false, stopped = false, vid = null;
+  const loopVideo = () => {
+    if (!vid) {
+      vid = document.createElement('video');
+      vid.className = 'vfs-video'; vid.muted = true; vid.loop = true; vid.playsInline = true;
+      vid.setAttribute('muted', ''); vid.setAttribute('playsinline', ''); vid.setAttribute('aria-hidden', 'true');
+      vid.src = NOSLEEP_MP4;
+      document.body.appendChild(vid);
+    }
+    if (vid.paused) vid.play().catch(() => {});
   };
-  const onVis = () => { if (document.visibilityState === 'visible' && !lock) grab(); };
+  const grab = async () => {
+    if (stopped || document.visibilityState !== 'visible') return;
+    if (IS_IOS || !('wakeLock' in navigator)) loopVideo();
+    if ('wakeLock' in navigator && !lock && !asking) {
+      asking = true;
+      try { lock = await navigator.wakeLock.request('screen'); lock.addEventListener('release', () => { lock = null; }); }
+      catch { loopVideo(); }   // refused (e.g. needs a tap first): fall back to the video until the next try
+      finally { asking = false; }
+    }
+  };
+  const onVis = () => { if (document.visibilityState === 'visible') grab(); };
   document.addEventListener('visibilitychange', onVis);
+  document.addEventListener('pointerdown', grab, true);   // a tap counts as permission on browsers that need one
+  const recheck = setInterval(grab, 15000);
   grab();
-  return () => { stopped = true; document.removeEventListener('visibilitychange', onVis); try { lock && lock.release(); } catch {} };
+  return () => {
+    stopped = true; clearInterval(recheck);
+    document.removeEventListener('visibilitychange', onVis); document.removeEventListener('pointerdown', grab, true);
+    try { lock && lock.release(); } catch {}
+    if (vid) { vid.pause(); vid.removeAttribute('src'); vid.load(); vid.remove(); }
+  };
 }
 
 const fsRoot = document.documentElement;
@@ -779,9 +807,8 @@ async function showViewer(code) {
   const count = Math.max(1, meta.count | 0);
   let phase = null, idx = -1, iphoneFS = meta.iphoneFS !== false;
   const fsOK = () => canFS || (canVideoFS && iphoneFS);
-  const hintHTML = () => fsOK() ? `Tap the screen, then <span class="inline-block w-4 h-4 align-[-3px]">${I.fs}</span> for full screen` : 'Turn your phone sideways for bigger slides';
   app.innerHTML = `<div id="vStage"></div><div id="vWait"></div>
-    ${canFS || canVideoFS ? `<button id="vFs" class="fs-btn gone" aria-label="Full screen">${I.fs}</button>` : ''}
+    ${canFS || canVideoFS ? `<button id="vFs" class="fs-btn gone">Fullscreen ${I.fs}</button>` : ''}
     <div id="vHint" class="hint gone"></div>`;
   const stage = createStage($('#vStage'));
   stage.setAspect(meta.aspect);
@@ -822,25 +849,23 @@ async function showViewer(code) {
               <div id="vLoad" class="text-xs font-semibold text-slate-500 mt-2" aria-live="polite"></div>
             </div>
           </section>
-          <p class="text-sm text-slate-500 mt-5">${fsOK() ? 'Once the slides appear, tap the screen for a full-screen button.' : 'Turn your phone sideways during the talk for bigger slides.'}</p>
+          <p class="text-sm text-slate-500 mt-5">${fsOK() ? 'Once the slides appear, tap Fullscreen in the top right corner.' : 'Turn your phone sideways during the talk for bigger slides.'}</p>
         </div>
       </div>
     </div>`;
     showProgress();
   }
 
-  /* full-screen button and sideways hint: shown briefly, and again on tap */
+  /* Fullscreen button: always showing during the talk unless the phone is already in full screen.
+     Where full screen isn't available (iPhone with the option off), a one-time hint suggests turning sideways. */
   const fsBtn = $('#vFs'), hint = $('#vHint');
-  let chromeT = 0, hinted = false;
-  const flashChrome = () => {
-    if (phase !== 'live' || !fsBtn || !fsOK()) return;
-    fsBtn.classList.remove('gone'); clearTimeout(chromeT);
-    chromeT = setTimeout(() => fsBtn.classList.add('gone'), 3000);
-  };
+  let hinted = false;
+  const updateFsBtn = () => { if (fsBtn) fsBtn.classList.toggle('gone', !(phase === 'live' && fsOK() && !isFS())); };
+  onEl(document, 'fullscreenchange', updateFsBtn);
+  onEl(document, 'webkitfullscreenchange', updateFsBtn);
   const maybeHint = () => {
-    if (hinted || phase !== 'live' || innerWidth > 900) return;
-    if (!fsOK() && (meta.aspect < 1.2 || innerWidth > innerHeight)) return;
-    hinted = true; hint.innerHTML = hintHTML(); hint.classList.remove('gone'); setTimeout(() => hint.classList.add('gone'), 5000);
+    if (hinted || phase !== 'live' || fsOK() || innerWidth > 900 || meta.aspect < 1.2 || innerWidth > innerHeight) return;
+    hinted = true; hint.textContent = 'Turn your phone sideways for bigger slides'; hint.classList.remove('gone'); setTimeout(() => hint.classList.add('gone'), 5000);
   };
 
   /* iPhone full screen: a hidden video plays a live copy of the slide, then goes full screen when tapped.
@@ -889,11 +914,9 @@ async function showViewer(code) {
     else { v.video.play().catch(() => {}); v.video.addEventListener('loadedmetadata', go, { once: true }); }
   }
   if (fsBtn) onEl(fsBtn, 'click', e => {
-    e.stopPropagation(); fsBtn.classList.add('gone');
+    e.stopPropagation();
     if (canFS) toggleFS(); else if (canVideoFS && iphoneFS) enterVideoFS();
   });
-  onEl(document, 'pointerdown', flashChrome);
-  teardown.push(() => clearTimeout(chromeT));
 
   /* sync */
   let inkRef = null, inkH = null;
@@ -911,14 +934,15 @@ async function showViewer(code) {
     const ni = clamp(v.idx | 0, 0, count - 1);
     if (ni !== idx) { idx = ni; stage.setStrokes([]); stage.setLaser(null); stage.show(getSlide(code, idx)); watchInk(idx); }
     renderWait();
-    if (phase === 'live' && was !== 'live') { flashChrome(); maybeHint(); }
+    updateFsBtn();
+    if (phase === 'live' && was !== 'live') maybeHint();
     syncVideoFS();
   });
   listen(R(code, 'laser'), v => stage.setLaser(v && typeof v.x === 'number' ? [v.x / 1e4, v.y / 1e4] : null));
   listen(R(code, 'meta'), v => {
     if (!v) { showEnded(meta.title); return; }
     iphoneFS = v.iphoneFS !== false;
-    if (!fsOK() && fsBtn) fsBtn.classList.add('gone');
+    updateFsBtn();
     syncVideoFS();
   });
 

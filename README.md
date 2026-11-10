@@ -66,10 +66,12 @@ If the host browser is refreshed or closed, open the site again and click **Resu
 
 ## Notes
 
-**Phones.** Viewers tap the screen to show a full-screen button. Android phones and iPads use the browser's normal full screen. iPhones don't allow that for web pages, so on iPhone the button plays a live copy of the slide (with your drawing and laser) in iPhone's own full-screen video player. Tapping the screen in that player shows the video controls for a moment, which is normal.
+**Phones.** A grey **Fullscreen** button stays in the top right corner of every phone until they tap it. Android phones and iPads use the browser's normal full screen. iPhones don't allow that for web pages, so on iPhone the button plays a live copy of the slide (with your drawing and laser) in iPhone's own full-screen video player. Tapping the screen in that player shows the video controls for a moment, which is normal.
 
 The iPhone video mode is on by default. Turn it off with the **Full screen on iPhones** checkbox when you create the room, or later on the join screen (press **Q** during the talk). The change reaches phones immediately. When it's off, iPhone viewers are told to turn the phone sideways instead.
 
 **Capacity.** Firebase's free plan allows 100 simultaneous connections and 10 GB of downloads a month. A 30-slide deck is roughly 8 to 12 MB per phone, so a 20-person session uses about 200 MB. Rooms are deleted automatically two days after they're created (the clean-up runs whenever a new room is made).
 
 **Security.** Like Our City, there are no logins. Anyone with the code can watch, which is the point. The rules don't stop a technically skilled person from writing to a room's data directly, so don't put anything confidential in a deck. If you ever need that, the next step is Firebase Anonymous Authentication with rules that let only the host's account change the slide.
+
+**Screens stay awake.** Phones (and the host computer) are kept from dimming or locking for as long as the page is open, in full screen or not. On iPhone this uses a tiny silent looping video in addition to the browser's wake lock, so it works on older iOS versions too. If a phone's Low Power Mode is on, iOS may still dim it.
