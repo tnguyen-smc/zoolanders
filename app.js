@@ -15,8 +15,8 @@
 /* ════ CONFIG ════════════════════════════════════════════════════════════════ */
 // Your Firebase Realtime Database URL. This is the Our City database; the slides live under their own
 // paths (slideRooms/, slideRoomIndex/) so they never touch the game's data. Swap in a new project's URL if you prefer.
-const FIREBASE_URL = 'https://our-city-gcks-default-rtdb.firebaseio.com';
-const APP_NAME = 'Live Slides';
+const FIREBASE_URL = 'https://zoolanders-gcks-default-rtdb.firebaseio.com/';
+const APP_NAME = 'Zoolanders';
 
 const ROOT = 'slideRooms', INDEX = 'slideRoomIndex';
 const ROOM_TTL_MS = 48 * 3600 * 1000;   // rooms are cleaned up after two days
