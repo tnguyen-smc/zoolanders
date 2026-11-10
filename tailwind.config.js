@@ -1,4 +1,4 @@
-/* Live Slides · Tailwind theme (loaded right after the Tailwind CDN script) */
+/* Zoolanders · Tailwind theme (loaded right after the Tailwind CDN script) */
 tailwind.config = {
     theme: { extend: {
       fontFamily: {

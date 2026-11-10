@@ -1,13 +1,8 @@
 {
   "rules": {
     "slideRooms": {
-      "$code": {
-        ".read": true,
-        ".write": true,
-        "images": {
-          "$i": { ".validate": "newData.isString() && newData.val().length < 8000000" }
-        }
-      }
+      ".read": true,
+      ".write": true
     },
     "slideRoomIndex": {
       ".read": true,

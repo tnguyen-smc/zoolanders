@@ -1,4 +1,4 @@
-# Live Slides
+# Zoolanders
 
 Upload a Canva deck, project the host screen, and let the audience scan a QR code. Every phone shows the same slide full screen, and when you change slides, draw, highlight, or use the laser pointer, it appears on their phones within a fraction of a second.
 
@@ -18,12 +18,7 @@ It's a static site, like Our City. GitHub Pages hosts the files and Firebase Rea
 
 ### 1. Firebase
 
-`app.js` already points at the Our City database (`our-city-gcks`). The slides use their own paths (`slideRooms/` and `slideRoomIndex/`), so they never touch the game's data.
-
-1. Open the [Firebase console](https://console.firebase.google.com), choose the project, then **Build → Realtime Database → Rules**.
-2. Add the two entries from `database.rules.json` (`slideRooms` and `slideRoomIndex`) inside your existing `"rules": { … }` block, next to what's already there, and click **Publish**. If your rules are already `".read": true, ".write": true` at the top level, you can skip this.
-
-To use a separate Firebase project instead, create one, add a Realtime Database (Spark plan is free), paste `database.rules.json` into its Rules tab, and put its URL in `FIREBASE_URL` in `app.js`.
+`app.js` points to the Zoolanders database (`https://zoolanders-gcks-default-rtdb.firebaseio.com`). In the Firebase console, open **Build → Realtime Database → Rules**, replace everything with the contents of `database.rules.json`, and click **Publish**.
 
 ### 2. GitHub Pages
 
@@ -75,3 +70,5 @@ The iPhone video mode is on by default. Turn it off with the **Full screen on iP
 **Security.** Like Our City, there are no logins. Anyone with the code can watch, which is the point. The rules don't stop a technically skilled person from writing to a room's data directly, so don't put anything confidential in a deck. If you ever need that, the next step is Firebase Anonymous Authentication with rules that let only the host's account change the slide.
 
 **Screens stay awake.** Phones (and the host computer) are kept from dimming or locking for as long as the page is open, in full screen or not. On iPhone this uses a tiny silent looping video in addition to the browser's wake lock, so it works on older iOS versions too. If a phone's Low Power Mode is on, iOS may still dim it.
+
+**Updating the app.** Phones can hold on to an old copy of the files for a while. Whenever you change `app.js` or `app.css`, raise the `?v=` number on the three lines in `index.html` (for example `?v=4` to `?v=5`) so everyone gets the new version right away.

@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════════════════════
-   Live Slides · host screen + phone viewers   — no build step
+   Zoolanders · host screen + phone viewers   — no build step
    Sync: Firebase Realtime Database (FIREBASE_URL below). No server of your own.
 
    slideRooms/<CODE>/meta                 { title, count, aspect, ready, createdAt }
@@ -13,9 +13,8 @@
 'use strict';
 
 /* ════ CONFIG ════════════════════════════════════════════════════════════════ */
-// Your Firebase Realtime Database URL. This is the Our City database; the slides live under their own
-// paths (slideRooms/, slideRoomIndex/) so they never touch the game's data. Swap in a new project's URL if you prefer.
-const FIREBASE_URL = 'https://zoolanders-gcks-default-rtdb.firebaseio.com/';
+// Your Firebase Realtime Database URL (no slash at the end).
+const FIREBASE_URL = 'https://zoolanders-gcks-default-rtdb.firebaseio.com';
 const APP_NAME = 'Zoolanders';
 
 const ROOT = 'slideRooms', INDEX = 'slideRoomIndex';
@@ -103,6 +102,14 @@ const writeErr = err => { if (Date.now() - lastWriteErr > 5000) { lastWriteErr =
     Uses the Wake Lock API where the browser has it. On iPhone and iPad it also loops a tiny silent video,
     the long-standing way to stop iOS from sleeping, because Wake Lock there is missing on older versions
     and unreliable from home-screen icons. Both are re-armed on every tap and whenever the page comes back. */
+/** Hidden helper videos must never pop out as picture-in-picture when someone swipes home. */
+function noPiP(v) {
+  v.disablePictureInPicture = true;
+  v.setAttribute('disablepictureinpicture', ''); v.setAttribute('x-webkit-airplay', 'deny');
+  v.addEventListener('webkitpresentationmodechanged', () => {
+    try { if (v.webkitPresentationMode === 'picture-in-picture') v.webkitSetPresentationMode('inline'); } catch {}
+  });
+}
 const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const NOSLEEP_MP4 = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMrbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAB9AAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlV0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAB9AAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAfQAAAAAAABAAAAAAHNbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAgABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABeG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAThzdGJsAAAAuHN0c2QAAAAAAAAAAQAAAKhhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MC4zMS4xMDIgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALmF2Y0MBQsAK/+EAFmdCwArZHsBEAAADAAQAAAMACDxImSABAAVoy4PLIAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAApAAAAKQAAAABhzdHRzAAAAAAAAAAEAAAACAABAAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAHHN0c2MAAAAAAAAAAQAAAAEAAAACAAAAAQAAABxzdHN6AAAAAAAAAAAAAAACAAAChgAAAAoAAAAUc3RjbwAAAAAAAAABAAADWwAAAGJ1ZHRhAAAAWm1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALWlsc3QAAAAlqXRvbwAAAB1kYXRhAAAAAQAAAABMYXZmNjAuMTYuMTAwAAAACGZyZWUAAAKYbWRhdAAAAnAGBf//bNxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDE6MHgxMTEgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTAgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MCB3ZWlnaHRwPTAga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAOZYiEBb///w9FAAFPf4AAAAAGQZo4CvqA';
 function keepAwake() {
@@ -112,7 +119,7 @@ function keepAwake() {
       vid = document.createElement('video');
       vid.className = 'vfs-video'; vid.muted = true; vid.loop = true; vid.playsInline = true;
       vid.setAttribute('muted', ''); vid.setAttribute('playsinline', ''); vid.setAttribute('aria-hidden', 'true');
-      vid.src = NOSLEEP_MP4;
+      vid.src = NOSLEEP_MP4; noPiP(vid);
       document.body.appendChild(vid);
     }
     if (vid.paused) vid.play().catch(() => {});
@@ -127,7 +134,10 @@ function keepAwake() {
       finally { asking = false; }
     }
   };
-  const onVis = () => { if (document.visibilityState === 'visible') grab(); };
+  const onVis = () => {
+    if (document.visibilityState === 'visible') grab();
+    else if (vid) vid.pause();   // nothing should keep playing once they leave the page
+  };
   document.addEventListener('visibilitychange', onVis);
   document.addEventListener('pointerdown', grab, true);   // a tap counts as permission on browsers that need one
   const recheck = setInterval(grab, 15000);
@@ -860,7 +870,7 @@ async function showViewer(code) {
      Where full screen isn't available (iPhone with the option off), a one-time hint suggests turning sideways. */
   const fsBtn = $('#vFs'), hint = $('#vHint');
   let hinted = false;
-  const updateFsBtn = () => { if (fsBtn) fsBtn.classList.toggle('gone', !(phase === 'live' && fsOK() && !isFS())); };
+  const updateFsBtn = () => { if (fsBtn) fsBtn.classList.toggle('gone', !(phase === 'live' && fsOK() && !(canFS && isFS()))); };
   onEl(document, 'fullscreenchange', updateFsBtn);
   onEl(document, 'webkitfullscreenchange', updateFsBtn);
   const maybeHint = () => {
@@ -884,29 +894,40 @@ async function showViewer(code) {
     const video = document.createElement('video');
     video.className = 'vfs-video'; video.muted = true; video.playsInline = true; video.autoplay = true;
     video.setAttribute('playsinline', ''); video.setAttribute('muted', ''); video.setAttribute('aria-hidden', 'true');
+    noPiP(video);
     video.srcObject = stream;
     document.body.appendChild(video);
     video.play().catch(() => {});
     let raf = 0;
     const offChange = stage.onChange(() => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(); }); });
     const tick = setInterval(paint, 1000);   // a fresh frame every second keeps the stream from stalling
-    const resume = () => { video.play().catch(() => {}); };
-    video.addEventListener('pause', resume);           // the player's pause button would freeze the slides
-    video.addEventListener('webkitendfullscreen', resume);
+    // the player's pause button would freeze the slides, so play again, but never while the page is in the background
+    const resume = () => { if (vfs && vfs.video === video && document.visibilityState === 'visible') video.play().catch(() => {}); };
+    const onEnd = () => { resume(); updateFsBtn(); };
+    video.addEventListener('pause', resume);
+    video.addEventListener('webkitendfullscreen', onEnd);
     vfs = {
       video,
       stop() {
         offChange(); clearInterval(tick); cancelAnimationFrame(raf);
-        video.removeEventListener('pause', resume);
-        try { if (video.webkitDisplayingFullscreen) video.webkitExitFullscreen(); } catch {}
-        stream.getTracks().forEach(t => t.stop()); video.srcObject = null; video.remove();
+        video.removeEventListener('pause', resume); video.removeEventListener('webkitendfullscreen', onEnd);
+        try { if (video.webkitPresentationMode && video.webkitPresentationMode !== 'inline') video.webkitSetPresentationMode('inline'); } catch {}
+        try { video.webkitExitFullscreen(); } catch {}
+        try { video.pause(); } catch {}
+        stream.getTracks().forEach(t => t.stop());
+        video.srcObject = null; video.removeAttribute('src'); try { video.load(); } catch {}
+        setTimeout(() => video.remove(), 600);   // give iOS a moment to close the player before the element goes
       }
     };
     return vfs;
   }
-  const vfsStop = () => { if (vfs) { vfs.stop(); vfs = null; } };
+  const vfsStop = () => { if (vfs) { const v = vfs; vfs = null; v.stop(); } };
   teardown.push(vfsStop);
-  const syncVideoFS = () => { if (canVideoFS && iphoneFS && phase === 'live') vfsStart(); else vfsStop(); };
+  // Swiping home or switching apps closes the iPhone video completely, so iOS has nothing to turn into picture-in-picture.
+  // It's set up again when they come back.
+  onEl(document, 'visibilitychange', () => { if (document.visibilityState === 'hidden') vfsStop(); else { syncVideoFS(); updateFsBtn(); } });
+  onEl(window, 'pagehide', vfsStop);
+  const syncVideoFS = () => { if (canVideoFS && iphoneFS && phase === 'live' && document.visibilityState === 'visible') vfsStart(); else vfsStop(); };
   function enterVideoFS() {
     const v = vfsStart(); if (!v) return;
     const go = () => { try { v.video.webkitEnterFullscreen(); } catch { toast('Full screen didn’t start. Tap the button again.'); } };
@@ -940,7 +961,7 @@ async function showViewer(code) {
   });
   listen(R(code, 'laser'), v => stage.setLaser(v && typeof v.x === 'number' ? [v.x / 1e4, v.y / 1e4] : null));
   listen(R(code, 'meta'), v => {
-    if (!v) { showEnded(meta.title); return; }
+    if (!v) { vfsStop(); showEnded(meta.title); return; }
     iphoneFS = v.iphoneFS !== false;
     updateFsBtn();
     syncVideoFS();

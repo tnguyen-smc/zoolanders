@@ -1,4 +1,4 @@
-/* Live Slides · styles (same look as Our City: charcoal + leaf green, Montserrat) */
+/* Zoolanders · styles (same look as Our City: charcoal + leaf green, Montserrat) */
 :root { --sl-50:247 247 245; --sl-100:238 239 235; --sl-200:224 225 220; --sl-300:201 202 197; --sl-400:157 158 154; --sl-500:119 120 122; --sl-600:88 89 91; --sl-700:74 75 77; --sl-800:56 57 59; --sl-900:42 43 44; --sl-950:26 26 27;
   --em-50:244 249 232; --em-100:229 242 198; --em-200:207 230 155; --em-300:180 216 106; --em-400:155 203 69; --em-500:111 168 33; --em-600:90 143 23; --em-700:74 122 18; --em-800:59 95 18; --em-900:47 76 18; --em-950:28 47 8;
   --bg:#f6f7f4; --text:#4a4b4d; --text-strong:#38393b; --line:#e6e7e2; --field-line:#d4d5d0; --dot:74,75,77;
